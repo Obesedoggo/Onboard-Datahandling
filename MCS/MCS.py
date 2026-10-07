@@ -1,3 +1,4 @@
+#Serial comm between py and ard IDE: https://projecthub.arduino.cc/ansh2919/serial-communication-between-python-and-arduino-663756
 import serial 
 import time 
 arduino = serial.Serial(port='COM4', baudrate=115200, timeout=.1) 
