@@ -3,49 +3,137 @@
 
 // Configuration
 const long baud = 115200;
-const long period = 10000;
-const long buf_size = 48;                   // maximum size for command
+const long buf_size = 48;                  // maximum size for Telecommand
+const long hkPeriod = 5000;                // period for house keeping report to ground station
 
-// Platform(PF) State
+// On-board time
+uint32_t obtBase  = 0;                     // OBT value (in seconds) at the moment obtRefMs was recorded
+uint32_t obtRefMs = 0; 
+
+// Satellite State
 enum PfMode { MODE_SAFE, MODE_TARGET };
-bool PlPower = false;
+bool plPower = false;
 
 // set initial PF state
-PfMode = MODE_SAFE;
+PfMode pfMode = MODE_SAFE;
+
+int lastHkPeriod = 0;
+
+// ---------- Time functions ----------
+
+uint32_t getObt() {                                          // Returns current OBT in seconds
+  return (obtBase + (millis() - obtRefMs) / 1000UL) % 86400UL; // base + elapsed seconds, wrapped at 24 h (86400 s)
+}
+
+void setObt(uint32_t secs) {               // Sets the on-board clock to the given time
+  obtBase  = secs % 86400UL;               // Store the new time (wrapped into 0..86399 to be safe)
+  obtRefMs = millis();                     // Remember the current arduino time so elapsed time is counted from here
+}
+
+bool parseTime(const char* s, uint32_t &outSecs) {           // Converts "hh:mm:ss" text to seconds; returns false if invalid
+  int h, m, sec;                                             // Temporary variables for hours, minutes, seconds
+  if (sscanf(s, "%d:%d:%d", &h, &m, &sec) != 3) return false; // Read three integers separated by ':'; fail if not exactly 3 found
+  if (h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59) return false; // Range check each part
+  outSecs = (uint32_t)h * 3600UL + (uint32_t)m * 60UL + (uint32_t)sec;           // Convert to total seconds since midnight
+  return true;                                               // Parsing succeeded; result is in outSecs (passed by reference)
+}
+
+void printObt(uint32_t t) {                // Prints seconds-since-midnight as "hh:mm:ss" on the serial port
+  char buf[9];                             // Text buffer: 8 characters "hh:mm:ss" + 1 for the '\0' terminator
+  snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu",             // Format with leading zeros ("%02lu" = 2-digit unsigned long)
+           t / 3600UL, (t / 60UL) % 60UL, t % 60UL);          // hours, minutes, seconds computed from total seconds
+  Serial.print(buf);                       // Send the formatted text (no newline; caller continues the line)
+}
+
+// ---------- Telemetry ----------
+
+void sendAck(const char* seq, bool accepted) { // Sends TC verification for the command with sequence number seq
+  Serial.print(F("TM_EVT_ACK,"));          // TM code
+  printObt(getObt());                      // Field 1: OBT
+  Serial.print(',');                       // Field separator
+  Serial.print(seq);                       // Field 2: sequence number of the TC being acknowledged (echoed as text)
+  Serial.print(',');                       // Field separator
+  Serial.println(accepted ? F("ACCEPT") : F("REJECT")); // Field 3: verification result, ends the line
+}
+
+void sendModeEvent(PfMode oldM, PfMode newM) { // Reports a platform mode transition
+  Serial.print(F("TM_EVT_MODE,"));         // TM code
+  printObt(getObt());                      // Field 1: OBT
+  Serial.print(',');                       // Field separator
+  Serial.print(modeName(oldM));            // Field 2: previous mode
+  Serial.print(',');                       // Field separator
+  Serial.println(modeName(newM));          // Field 3: new mode, ends the line
+}
+
+void sendPlEvent(const char* evt, const char* status) { // Reports a payload event (power change, image, ...)
+  Serial.print(F("TM_EVT_PL,"));           // TM code
+  printObt(getObt());                      // Field 1: OBT
+  Serial.print(',');                       // Field separator
+  Serial.print(evt);                       // Field 2: event name, e.g. "IMAGE_TAKEN"
+  Serial.print(',');                       // Field separator
+  Serial.println(status);                  // Field 3: status text, ends the line
+}
+
+void sendHK() {
+  Serial.print("TM_HK,");
+  printObt(getObt());
+  Serial.print(',');
+  Serial.print(pfMode);
+  Serial.print(',');
+  Serial.println(plPower);
+}
+
+// ---------- Platform and Payload Event ----------
+
+void changeMode(PfMode newMode){
+  if (pfMode == newMode){
+    Serial.println("Platform already operates in this mode");
+  } else {
+    PfMode oldMode = pfMode;
+    pfMode = newMode;
+
+    sendModeEvent(oldMode, newMode);
+  }
+}
+
+const char* modeName(PfMode m) { return (m == MODE_SAFE) ? "SAFE" : "TARGET"; } // Converts a mode enum to its text name
 
 // ---------- Telecommand handling ----------
+
 void handleTC(char* line) {                // Parses and executes one complete command line (modified in place by strtok)
   // Split into tokens: code, seq, arg
   char* code = strtok(line, " ");          // First token: TC code, e.g. "TC_03"
-  char* seq  = strtok(NULL, " ");          // Second token: sequence number
+  char* seq  = strtok(NULL, " ");          // Second token: sequence number (identifying number for this command)
   char* arg  = strtok(NULL, " ");          // Third token: argument (NULL if the TC has none)
 
   if (!code || !seq) return;               // Frame too short: no sequence number to ACK against, so ignore it
 
-  bool ok = false;                         // Becomes true if the command is valid and accepted
+  bool comAccepted = false;                         // Becomes true if the command is valid and accepted
 
   if (strcmp(code, "TC_01") == 0) {                       // TC_01 = SET_OBT
     uint32_t t;                                           // Will hold the parsed time in seconds
     if (arg && parseTime(arg, t)) {                       // Argument present and valid "hh:mm:ss"?
-      ok = true;                                          // Mark as handled
+      comAccepted = true;                                          // Mark as handled
       sendAck(seq, true);                                 // ACK first, so it carries the OBT from before the change
       setObt(t);                                          // Then set the new on-board time
+      sendAck(seq, true);
     }
 
   } else if (strcmp(code, "TC_02") == 0) {                // TC_02 = SET_PF_MODE
     if (arg && strcmp(arg, "SAFE") == 0) {                // Argument is "SAFE"
-      ok = true; sendAck(seq, true); changeMode(MODE_SAFE);     // ACK, then switch (this may emit further events)
+      comAccepted = true; sendAck(seq, true); changeMode(MODE_SAFE);     // ACK, then switch (this may emit further events)
     } else if (arg && strcmp(arg, "TARGET") == 0) {       // Argument is "TARGET"
-      ok = true; sendAck(seq, true); changeMode(MODE_TARGET);   // ACK, then switch
+      comAccepted = true; sendAck(seq, true); changeMode(MODE_TARGET);   // ACK, then switch
     }
 
   } else if (strcmp(code, "TC_03") == 0) {                // TC_03 = SET_PL_POWER
     if (arg && (arg[0] == '0' || arg[0] == '1') && arg[1] == '\0') { // Argument is exactly "0" or "1"
-      bool on = (arg[0] == '1');                          // Convert the character to a boolean
-      // Example rule: payload may only be powered in TARGET mode
+      bool on = (arg[0] == '1');                          // Convert the argument to a boolean
+
+      // Payload may only be powered in TARGET mode
       if (!(on && pfMode == MODE_SAFE)) {                 // Reject only "switch ON while in SAFE"
-        ok = true;                                        // Mark as handled
-        sendAck(seq, true);                               // ACK first
+        comAccepted = true;                               // Mark as accepted
+        sendAck(seq, true);                               // send acknowledgement
         if (on != plPower) {                              // Only act if the state really changes
           plPower = on;                                   // Apply the new power state
           sendPlEvent(on ? "PL_POWER_ON" : "PL_POWER_OFF", "OK"); // Report the change
@@ -53,55 +141,63 @@ void handleTC(char* line) {                // Parses and executes one complete c
       }
     }
 
-  } else if (strcmp(code, "TC_04") == 0) {                // TC_04 = TAKE_IMAGE
-    uint32_t t;                                           // Will hold the parsed time tag in seconds
-    if (arg && plPower) {                                 // Needs an argument and a powered payload
-      if (strcmp(arg, "0") == 0) {                        // "0" = take the image now
-        ok = true; sendAck(seq, true); takeImage();       // ACK, then execute immediately
-      } else if (parseTime(arg, t)) {                     // Otherwise expect a time tag "hh:mm:ss"
-        ok = true; sendAck(seq, true);                    // ACK
-        imgPending = true; imgTime = t;                   // Store the schedule (overwrites any earlier one)
-        sendPlEvent("IMAGE_SCHEDULED", "OK");             // Report that the image is queued
-      }
-    }
-  }
-  // An unknown TC code falls through all branches with ok == false
+  } //else if (strcmp(code, "TC_04") == 0) {                // TC_04 = TAKE_IMAGE
+  //   uint32_t t;                                           // Will hold the parsed time tag in seconds
+  //   if (arg && plPower) {                                 // Needs an argument and a powered payload
+  //     if (strcmp(arg, "0") == 0) {                        // "0" = take the image now
+  //       comAccepted = true; sendAck(seq, true); takeImage();       // ACK, then execute immediately
+  //     } else if (parseTime(arg, t)) {                     // Otherwise expect a time tag "hh:mm:ss"
+  //       comAccepted = true; sendAck(seq, true);                    // ACK
+  //       imgPending = true; imgTime = t;                   // Store the schedule (overwrites any earlier one)
+  //       sendPlEvent("IMAGE_SCHEDULED", "OK");             // Report that the image is queued
+  //     }
+  //   }
+  // }
+  // An unknown TC code falls through all branches with comAccepted == false
 
-  if (!ok) sendAck(seq, false);            // Anything not accepted above gets a REJECT
+  if (!comAccepted) sendAck(seq, false);            // Anything not accepted above gets a REJECT
 }
 
 void readTC() {
-  static char buf[buf_size]
-  static int buf_cur_size = 0;
+  static char buf[buf_size];
+  static int i_buf = 0;
+  static bool overflow = false;            // Set when a line was too long and is being discarded
 
   while (Serial.available() > 0) {         // Process everything currently waiting in the serial input buffer
     char c = (char)Serial.read();          // Take one character
 
-    //if (c == '\r') continue;               // Ignore carriage return (Windows-style line endings)
+    // if (c == '\r') continue;               // Ignore carriage return (Windows-style line endings)
     if (c == '\n') {                       // Newline = end of the command line
-      if (!overflow && len > 0) {          // Only process if the line was not too long and not empty
-        buf[len] = '\0';                   // Terminate the text so it is a valid C string
+      if (!overflow && i_buf > 0) {          // Only process if the line was not too long and not empty
+        buf[i_buf] = '\0';                   // Terminate the text so it is a valid C string
         handleTC(buf);                     // Parse and execute the command
       }
-      len = 0; overflow = false;           // Reset for the next line
-    } else if (len < RX_BUF_SIZE - 1) {    // Room left (keeping one byte for '\0')?
-      buf[len++] = c;                      // Store the character and advance
+      i_buf = 0; 
+      overflow = false;           // Reset for the next line
+    } else if (i_buf < buf_size - 1) {    // Room left (keeping one byte for '\0')?
+      buf[i_buf++] = c;                      // Store the character and advance
 
     } else {
       overflow = true;                     // Buffer full: mark the line as invalid and drop the rest of it
+      char overflow_msg[100];
+      snprintf(overflow_msg, sizeof(overflow_msg), "TC was longer than expected. More than %d", buf_size);
+      Serial.print("overflow_msg");
     }
   }
 }
 
+// ---------- Arduino Execution Functions ----------
 void setup() {
+  Serial.begin(baud);
 
-
-  serial.begin(baud);
-  int x = 0;
-
+  lastHkPeriod = millis();
 }
 
 void loop() {
   readTC();
 
+  if (millis()-lastHkPeriod >= hkPeriod) {
+    sendHK();
+    lastHkPeriod = millis();
+  }
 }
