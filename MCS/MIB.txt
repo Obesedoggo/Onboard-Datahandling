@@ -1,0 +1,21 @@
+﻿# =======================================================================
+# MISSION INFORMATION BASE (MIB) CONFIGURATION FILE
+# File: mib.txt
+# Description: Defines Telecommand (TC) and Telemetry (TM) formats loaded at launch
+# =======================================================================
+
+
+[TELECOMMANDS]
+# Format: TC_CODE | TARGET | COMMAND_NAME | NUM_ARGS | ARG_TYPES | DESCRIPTION
+TC_01 | PF | SET_OBT      | 1 | TIME     | Sets On-Board Time clock (hh:mm:ss)
+TC_02 | PF | SET_PF_MODE | 1 | STRING   | Sets Platform Mode (SAFE, TARGET)
+TC_03 | PL | SET_PL_POWER | 1 | INT      | Toggles Payload Power (0=OFF, 1=ON)
+TC_04 | PL | TAKE_IMAGE   | 1 | TIME_TAG | Schedules image acquisition at hh:mm:ss (0=NOW)
+
+
+[TELEMETRY]
+# Format: TM_CODE | TYPE | NUM_FIELDS | FIELD_FORMAT | DESCRIPTION
+TM_HK      | CYCLIC | 3 | OBT,PF_MODE,PL_POWER         | Periodic Housekeeping Status
+TM_EVT_ACK | EVENT  | 3 | OBT,TC_SEQ,STATUS            | TC Verification (ACCEPT/REJECT)
+TM_EVT_MODE| EVENT  | 3 | OBT,OLD_MODE,NEW_MODE        | Platform Mode Transition Event
+TM_EVT_PL  | EVENT  | 3 | OBT,PL_EVENT,STATUS          | Payload Operation Update
