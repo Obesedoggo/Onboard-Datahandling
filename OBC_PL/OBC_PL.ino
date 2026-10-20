@@ -93,14 +93,11 @@ void sendHK() {
 // ---------- Platform and Payload Event ----------
 
 void changeMode(PfMode newMode){
-  if (pfMode == newMode){
-    Serial.println("Platform already operates in this mode");
-  } else {
     PfMode oldMode = pfMode;
+    if(strcmp(modeName(newMode), "SAFE") == 0){payload.setPower(false); } // turn off payload power when entering safe-mode
     pfMode = newMode;
 
     sendModeEvent(oldMode, newMode);
-  }
 }
 
 const char* modeName(PfMode m) { return (m == MODE_SAFE) ? "SAFE" : "TARGET"; } // Converts a mode enum to its text name
@@ -124,31 +121,28 @@ void handleTC(char* line) {                // Parses and executes one complete c
       setObt(t);                                          // Then set the new on-board time
       sendAck(seq, true);
     }
-
-  } else if (strcmp(code, "TC_02") == 0) {                // TC_02 = SET_PF_MODE
-    if (arg && strcmp(arg, "SAFE") == 0) {                // Argument is "SAFE"
-      tcAccepted = true; 
-      sendAck(seq, true);         // Acknowledge
-      changeMode(MODE_SAFE);
-    } else if (arg && strcmp(arg, "TARGET") == 0) {       // Argument is "TARGET"
-      tcAccepted = true; 
-      sendAck(seq, true);         // Acknowledge
-      changeMode(MODE_TARGET);
+  
+  } else if (strcmp(code, "TC_02") == 0) {                  // TC_02 = SET_PF_MODE
+    if (strcmp(modeName(pfMode), arg) != 0){
+      if (arg && strcmp(arg, "SAFE") == 0) {                // Argument is "SAFE"
+        tcAccepted = true;
+        changeMode(MODE_SAFE);
+        sendAck(seq, true);                                 // Acknowledge
+      } else if (arg && strcmp(arg, "TARGET") == 0) {       // Argument is "TARGET"
+        tcAccepted = true;
+        changeMode(MODE_TARGET);
+        sendAck(seq, true);                                 // Acknowledge
+      }
     }
-
   } else if (strcmp(code, "TC_03") == 0) {                // TC_03 = SET_PL_POWER
     if (arg && (arg[0] == '0' || arg[0] == '1') && arg[1] == '\0') { // Argument is exactly "0" or "1"
       bool on = (arg[0] == '1');                          // Convert the argument to a boolean
 
       // Payload may only be powered in TARGET mode
-      if (!(on && pfMode == MODE_SAFE)) {                // Reject only "switch ON while in SAFE"
-        tcAccepted = true;                               // Mark as accepted
-        sendAck(seq, true);                              // send acknowledgement
-        if (on != payload.getPower()) {                  // Only pass TC to PL if the power state changes...
-          payload.setPower(on);
-        } else {
-          sendAck(seq, false);                           // ...otherwise reject command
-        }
+      if (!(on && pfMode == MODE_SAFE) && on != payload.getPower()) {   // Reject only switch-on while in SAFE or if power state wouldnt change
+      tcAccepted = true;                               // Mark as accepted
+      payload.setPower(on);
+      sendAck(seq, true);                              // send acknowledgement
       }
     }
 
@@ -177,7 +171,6 @@ void readTC() {
   while (Serial.available() > 0) {         // Process everything currently waiting in the serial input buffer
     char c = (char)Serial.read();          // Take one character
 
-    // if (c == '\r') continue;               // Ignore carriage return (Windows-style line endings)
     if (c == '\n') {                       // Newline = end of the command line
       if (!overflow && i_buf > 0) {          // Only process if the line was not too long and not empty
         buf[i_buf] = '\0';                   // Terminate the text so it is a valid C string
@@ -187,7 +180,6 @@ void readTC() {
       overflow = false;           // Reset for the next line
     } else if (i_buf < buf_size - 1) {    // Room left (keeping one byte for '\0')?
       buf[i_buf++] = c;                      // Store the character and advance
-
     } else {
       overflow = true;                     // Buffer full: mark the line as invalid and drop the rest of it
       char overflow_msg[100];
