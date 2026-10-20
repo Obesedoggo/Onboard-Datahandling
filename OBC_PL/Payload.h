@@ -7,8 +7,7 @@ public:
   Payload(EventCallback cb);       // constructor: gets the event-reporting function
   bool setPower(bool on);               // returns true if the state changed
   bool getPower() const;
-  //void takeImage();
-  //void safeModeOn();                  // called by the OBSW when entering SAFE mode
+  void takeImage();
 
 private:
   EventCallback report;

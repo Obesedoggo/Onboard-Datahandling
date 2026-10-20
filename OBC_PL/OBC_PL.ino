@@ -10,7 +10,11 @@ const long hkPeriod = 5000;                // period for house keeping report to
 
 // On-board time
 uint32_t obtBase  = 0;                     // OBT value (in seconds) at the moment obtRefMs was recorded
-uint32_t obtRefMs = 0; 
+uint32_t obtRefMs = 0;
+
+// Scheduled image variables
+bool imgPending = false;
+uint32_t imgTime = 0;
 
 // ---------- Platform State ----------
 enum PfMode { MODE_SAFE, MODE_TARGET };
@@ -102,6 +106,12 @@ void changeMode(PfMode newMode){
 
 const char* modeName(PfMode m) { return (m == MODE_SAFE) ? "SAFE" : "TARGET"; } // Converts a mode enum to its text name
 
+void scheduledImage(){
+  payload.takeImage();
+  imgPending = false;   // reset saved scheduled image command
+  imgTime = 0;
+}
+
 // ---------- Telecommand handling ----------
 
 void handleTC(char* line) {                // Parses and executes one complete command line (modified in place by strtok)
@@ -146,18 +156,23 @@ void handleTC(char* line) {                // Parses and executes one complete c
       }
     }
 
-  } //else if (strcmp(code, "TC_04") == 0) {                // TC_04 = TAKE_IMAGE
-  //   uint32_t t;                                           // Will hold the parsed time tag in seconds
-  //   if (arg && payload.getPower()) {                                 // Needs an argument and a powered payload
-  //     if (strcmp(arg, "0") == 0) {                        // "0" = take the image now
-  //       tcAccepted = true; sendAck(seq, true); takeImage();       // ACK, then execute immediately
-  //     } else if (parseTime(arg, t)) {                     // Otherwise expect a time tag "hh:mm:ss"
-  //       tcAccepted = true; sendAck(seq, true);                    // ACK
-  //       imgPending = true; imgTime = t;                   // Store the schedule (overwrites any earlier one)
-  //       sendPlEvent("IMAGE_SCHEDULED", "OK");             // Report that the image is queued
-  //     }
-  //   }
-  // }
+  } else if (strcmp(code, "TC_04") == 0) {                  // TC_04 = TAKE_IMAGE
+    uint32_t t;                                             // Will hold the parsed time tag in seconds
+    if (arg && payload.getPower()) {                        // Needs an argument and a powered payload
+      if (strcmp(arg, "0") == 0) {                          // "0" = take the image now
+        tcAccepted = true;
+        sendAck(seq, true);
+        payload.takeImage();
+        
+      } else if (parseTime(arg, t)) {                       // Otherwise expect a time tag "hh:mm:ss"
+        tcAccepted = true; 
+        sendAck(seq, true);
+        imgPending = true; 
+        imgTime = t;                                        // Store the schedule (overwrites any earlier one)
+        sendPlEvent("IMAGE_SCHEDULED", "OK");               // Report that the image is queued
+      }
+    }
+  }
   // An unknown TC code falls through all branches with tcAccepted == false
 
   if (!tcAccepted) sendAck(seq, false);            // Anything not accepted above gets a REJECT
@@ -199,8 +214,11 @@ void setup() {
 void loop() {
   readTC();
 
+  // Housekeeping telemetry is send every hkPeriod seconds
   if (millis()-lastHkPeriod >= hkPeriod) {
     sendHK();
     lastHkPeriod = millis();
   }
+
+  if (imgTime != 0 && getObt() >= imgTime) scheduledImage();
 }
