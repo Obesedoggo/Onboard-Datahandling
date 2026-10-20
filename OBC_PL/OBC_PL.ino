@@ -1,5 +1,7 @@
 // Spacecraft OBC Platform on Arduino
 
+#include <Arduino.h>
+#include "Payload.h"
 
 // Configuration
 const long baud = 115200;
@@ -10,11 +12,15 @@ const long hkPeriod = 5000;                // period for house keeping report to
 uint32_t obtBase  = 0;                     // OBT value (in seconds) at the moment obtRefMs was recorded
 uint32_t obtRefMs = 0; 
 
-// Satellite State
+// ---------- Platform State ----------
 enum PfMode { MODE_SAFE, MODE_TARGET };
-bool plPower = false;
+//bool plPower = false;
 
-// set initial PF state
+// ---------- Create payload object ----------
+void sendPlEvent(const char* evt, const char* status);
+Payload payload(sendPlEvent);
+
+// ---------- Set initial PF state ----------
 PfMode pfMode = MODE_SAFE;
 
 int lastHkPeriod = 0;
@@ -80,7 +86,8 @@ void sendHK() {
   Serial.print(',');
   Serial.print(pfMode);
   Serial.print(',');
-  Serial.println(plPower);
+  Serial.print(payload.getPower());
+  Serial.println();
 }
 
 // ---------- Platform and Payload Event ----------
@@ -108,22 +115,25 @@ void handleTC(char* line) {                // Parses and executes one complete c
 
   if (!code || !seq) return;               // Frame too short: no sequence number to ACK against, so ignore it
 
-  bool comAccepted = false;                         // Becomes true if the command is valid and accepted
+  bool tcAccepted = false;                         // Becomes true if the command is valid and accepted
 
   if (strcmp(code, "TC_01") == 0) {                       // TC_01 = SET_OBT
     uint32_t t;                                           // Will hold the parsed time in seconds
     if (arg && parseTime(arg, t)) {                       // Argument present and valid "hh:mm:ss"?
-      comAccepted = true;                                          // Mark as handled
-      sendAck(seq, true);                                 // ACK first, so it carries the OBT from before the change
+      tcAccepted = true;                                 // Mark as handled
       setObt(t);                                          // Then set the new on-board time
       sendAck(seq, true);
     }
 
   } else if (strcmp(code, "TC_02") == 0) {                // TC_02 = SET_PF_MODE
     if (arg && strcmp(arg, "SAFE") == 0) {                // Argument is "SAFE"
-      comAccepted = true; sendAck(seq, true); changeMode(MODE_SAFE);     // ACK, then switch (this may emit further events)
+      tcAccepted = true; 
+      sendAck(seq, true);         // Acknowledge
+      changeMode(MODE_SAFE);
     } else if (arg && strcmp(arg, "TARGET") == 0) {       // Argument is "TARGET"
-      comAccepted = true; sendAck(seq, true); changeMode(MODE_TARGET);   // ACK, then switch
+      tcAccepted = true; 
+      sendAck(seq, true);         // Acknowledge
+      changeMode(MODE_TARGET);
     }
 
   } else if (strcmp(code, "TC_03") == 0) {                // TC_03 = SET_PL_POWER
@@ -131,31 +141,32 @@ void handleTC(char* line) {                // Parses and executes one complete c
       bool on = (arg[0] == '1');                          // Convert the argument to a boolean
 
       // Payload may only be powered in TARGET mode
-      if (!(on && pfMode == MODE_SAFE)) {                 // Reject only "switch ON while in SAFE"
-        comAccepted = true;                               // Mark as accepted
-        sendAck(seq, true);                               // send acknowledgement
-        if (on != plPower) {                              // Only act if the state really changes
-          plPower = on;                                   // Apply the new power state
-          sendPlEvent(on ? "PL_POWER_ON" : "PL_POWER_OFF", "OK"); // Report the change
+      if (!(on && pfMode == MODE_SAFE)) {                // Reject only "switch ON while in SAFE"
+        tcAccepted = true;                               // Mark as accepted
+        sendAck(seq, true);                              // send acknowledgement
+        if (on != payload.getPower()) {                  // Only pass TC to PL if the power state changes...
+          payload.setPower(on);
+        } else {
+          sendAck(seq, false);                           // ...otherwise reject command
         }
       }
     }
 
   } //else if (strcmp(code, "TC_04") == 0) {                // TC_04 = TAKE_IMAGE
   //   uint32_t t;                                           // Will hold the parsed time tag in seconds
-  //   if (arg && plPower) {                                 // Needs an argument and a powered payload
+  //   if (arg && payload.getPower()) {                                 // Needs an argument and a powered payload
   //     if (strcmp(arg, "0") == 0) {                        // "0" = take the image now
-  //       comAccepted = true; sendAck(seq, true); takeImage();       // ACK, then execute immediately
+  //       tcAccepted = true; sendAck(seq, true); takeImage();       // ACK, then execute immediately
   //     } else if (parseTime(arg, t)) {                     // Otherwise expect a time tag "hh:mm:ss"
-  //       comAccepted = true; sendAck(seq, true);                    // ACK
+  //       tcAccepted = true; sendAck(seq, true);                    // ACK
   //       imgPending = true; imgTime = t;                   // Store the schedule (overwrites any earlier one)
   //       sendPlEvent("IMAGE_SCHEDULED", "OK");             // Report that the image is queued
   //     }
   //   }
   // }
-  // An unknown TC code falls through all branches with comAccepted == false
+  // An unknown TC code falls through all branches with tcAccepted == false
 
-  if (!comAccepted) sendAck(seq, false);            // Anything not accepted above gets a REJECT
+  if (!tcAccepted) sendAck(seq, false);            // Anything not accepted above gets a REJECT
 }
 
 void readTC() {
@@ -186,7 +197,7 @@ void readTC() {
   }
 }
 
-// ---------- Arduino Execution Functions ----------
+// ---------- Arduino Functions ----------
 void setup() {
   Serial.begin(baud);
 
