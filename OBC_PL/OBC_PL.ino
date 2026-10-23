@@ -11,6 +11,7 @@ const long hkPeriod = 5000;  // period [in ms] for house keeping report to groun
 // On-board time
 uint32_t obtBase = 0;   // Set OnBord Time (OBT) value [in s]
 uint32_t obtRefMs = 0;  // Saves local arduino time [in ms] when OBT time is set
+bool obtSynced = false;    // Before obs is set no PL operation should be possible
 
 int lastHkPeriod = 0;  // saves time of last housekeeping (HK) telemetry (TM)
 
@@ -38,6 +39,7 @@ uint32_t getObt() {                                   // Returns current OBT in 
 void setObt(uint32_t secs) {  // Sets the on-board clock to the given time
   obtBase = secs;             // Store the new time
   obtRefMs = millis();        // Remember the current arduino time
+  obtSynced = true;           // OBT has been set
 }
 
 bool parseTime(const char* s, uint32_t& outSecs) {  // Converts "hh:mm:ss" text to seconds; returns false if invalid
@@ -58,38 +60,38 @@ void printObt(uint32_t t) {                           // Prints time as "hh:mm:s
 // ---------- Telemetry ----------
 
 void sendAck(const char* seq, bool accepted) {           // Sends TC verification for the command with sequence number seq
-  Serial.print(F("TM_EVT_ACK,"));                        // TM code
+  Serial.print(F("TM_EVT_ACK "));                        // TM code
   printObt(getObt());                                    // Field 1: OBT
-  Serial.print(',');                                     // Field separator
+  Serial.print(' ');                                     // Field separator
   Serial.print(seq);                                     // Field 2: sequence number of the TC being acknowledged
-  Serial.print(',');                                     // Field separator
+  Serial.print(' ');                                     // Field separator
   Serial.println(accepted ? F("ACCEPT") : F("REJECT"));  // Field 3: verification result
 }
 
 void sendModeEvent(PfMode oldM, PfMode newM) {  // Reports a platform mode transition
-  Serial.print(F("TM_EVT_MODE,"));              // TM code
+  Serial.print(F("TM_EVT_MODE "));              // TM code
   printObt(getObt());                           // Field 1: OBT
-  Serial.print(',');                            // Field separator
+  Serial.print(' ');                            // Field separator
   Serial.print(modeName(oldM));                 // Field 2: previous mode
-  Serial.print(',');                            // Field separator
+  Serial.print(' ');                            // Field separator
   Serial.println(modeName(newM));               // Field 3: new mode
 }
 
-void sendPlEvent(const char* evt, const char* status) {  // Reports a payload event (power change, image, ...)
-  Serial.print(F("TM_EVT_PL,"));                         // TM code
+void sendPlEvent(const char* evt, const char* status) {  // Reports a payload event (power change  image  ...)
+  Serial.print(F("TM_EVT_PL "));                         // TM code
   printObt(getObt());                                    // Field 1: OBT
-  Serial.print(',');                                     // Field separator
+  Serial.print(' ');                                     // Field separator
   Serial.print(evt);                                     // Field 2: event name, e.g. "IMAGE_TAKEN"
-  Serial.print(',');                                     // Field separator
+  Serial.print(' ');                                     // Field separator
   Serial.println(status);                                // Field 3: status text
 }
 
 void sendHK() {
-  Serial.print("TM_HK,Cyclic,");     // TM Code
+  Serial.print("TM_HK ");     // TM Code
   printObt(getObt());                // Field 1: OBT
-  Serial.print(',');                 // Field separator
+  Serial.print(' ');                 // Field separator
   Serial.print(pfMode);              // Field 2: PF Mode
-  Serial.print(',');                 // Field separator
+  Serial.print(' ');                 // Field separator
   Serial.print(payload.getPower());  // Field 3: PL Power
   Serial.println();
 }
@@ -106,8 +108,8 @@ void changeMode(PfMode newMode) {
 }
 
 const char* modeName(PfMode m) {
-  return (m == MODE_SAFE) ? "SAFE" : "TARGET";
-}  // Converts a mode enum to its text name
+  return (m == MODE_SAFE) ? "SAFE" : "TARGET";  // Converts a mode enum to its text name
+}
 
 void scheduledImage() {
   payload.takeImage();  // initiate scheduled image take
@@ -123,7 +125,10 @@ void handleTC(char* line) {  // Parses and executes one complete command line
   char* seq = strtok(NULL, " ");   // Second token: sequence number
   char* arg = strtok(NULL, " ");   // Third token: argument
 
-  if (!code || !seq) sendAck(seq, false);  // no TC code or no sequence number, so reject TC
+  // if (!code || !seq) {
+  //   sendAck(seq, false);  // no TC code or no sequence number, so reject TC
+  //   return;
+  // }
 
   bool tcAccepted = false;  // Becomes true if the command is valid and accepted
 
@@ -147,8 +152,8 @@ void handleTC(char* line) {  // Parses and executes one complete command line
         sendAck(seq, true);
       }
     }
-  } else if (strcmp(code, "TC_03") == 0) {                            // TC_03 = SET_PL_POWER
-    if (arg && (arg[0] == '0' || arg[0] == '1') && arg[1] == '\0') {  // Argument is exactly "0" or "1"
+  } else if (strcmp(code, "TC_03") == 0) {               // TC_03 = SET_PL_POWER
+    if (arg && (arg[0] == '0' || arg[0] == '1') && arg[1] == '\0' && obtSynced) {  // Argument is exactly "0" or "1" and OBT was set
       bool on = (arg[0] == '1');                                      // Convert the argument to a boolean
 
       if (!(on && pfMode == MODE_SAFE) && on != payload.getPower()) {  // Reject only switch-on while in SAFE or if power state wouldnt change
@@ -160,7 +165,7 @@ void handleTC(char* line) {  // Parses and executes one complete command line
 
   } else if (strcmp(code, "TC_04") == 0) {  // TC_04 = TAKE_IMAGE
     uint32_t t;                             // Will hold the parsed time tag in seconds
-    if (arg && payload.getPower()) {        // Needs an argument and a powered payload
+    if (arg && payload.getPower() && obtSynced) {        // Needs an argument and a powered payload
       if (strcmp(arg, "0") == 0) {          // "0" = take the image now...
         tcAccepted = true;
         sendAck(seq, true);
