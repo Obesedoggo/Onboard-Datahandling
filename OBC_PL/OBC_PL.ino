@@ -85,7 +85,7 @@ void sendPlEvent(const char* evt, const char* status) { // Reports a payload eve
 }
 
 void sendHK() {
-  Serial.print("TM_HK,");
+  Serial.print("TM_HK,Cyclic,");
   printObt(getObt());
   Serial.print(',');
   Serial.print(pfMode);
@@ -99,6 +99,7 @@ void sendHK() {
 void changeMode(PfMode newMode){
     PfMode oldMode = pfMode;
     if(strcmp(modeName(newMode), "SAFE") == 0){payload.setPower(false); } // turn off payload power when entering safe-mode
+    delay(2000);
     pfMode = newMode;
 
     sendModeEvent(oldMode, newMode);
@@ -164,7 +165,7 @@ void handleTC(char* line) {                // Parses and executes one complete c
         sendAck(seq, true);
         payload.takeImage();
         
-      } else if (parseTime(arg, t)) {                       // Otherwise expect a time tag "hh:mm:ss"
+      } else if (parseTime(arg, t) && t > getObt()) {       // Otherwise expect a time tag "hh:mm:ss"
         tcAccepted = true; 
         sendAck(seq, true);
         imgPending = true; 

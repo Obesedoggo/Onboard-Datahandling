@@ -12,7 +12,8 @@ bool Payload::setPower(bool powerCommand) {
 bool Payload::getPower() const { return powered; }
 
 void Payload::takeImage(){
-  delay(10000);                 // simulate required time to take the picture
-  report("IMAGE_TAKEN", "OK");
+  report("TAKE_IMAGE", "START");
+  delay(5000);                 // simulate required time to generate data
+  report("TAKE_IMAGE", "FINSIHED");
   return;
 }
