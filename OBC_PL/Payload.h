@@ -1,15 +1,15 @@
 #include <Arduino.h>
 
-typedef void (*EventCallback)(const char* evt, const char* status);
+typedef void (*EventCallback)(const char* evt, const char* status); // Add the callback function to Pl class
 
 class Payload {
-public:
-  Payload(EventCallback cb);       // constructor: gets the event-reporting function
-  bool setPower(bool on);               // returns true if the state changed
+public:                       // PL functions
+  Payload(EventCallback cb);
+  bool setPower(bool on);
   bool getPower() const;
   void takeImage();
 
-private:
+private:                      // PL internal variable/function
   EventCallback report;
-  bool powered;                         // Payload power state: false = OFF, true = ON
+  bool powered;
 };
