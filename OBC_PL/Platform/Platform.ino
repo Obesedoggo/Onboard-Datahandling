@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include "Payload.h"
-
+//Serial for programming port, SerialUSB for Native port
 // Configuration
 const long baud = 115200;    // communication frequency
 const long buf_size = 48;    // maximum size for telecommand
